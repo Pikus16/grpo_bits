@@ -8,83 +8,77 @@ import wandb
 import numpy as np
 import json
 import subprocess
-from dataets import Dataset
+from datasets import Dataset
 import random
 import string
+from transformers import AutoTokenizer
+import re
 
-def generate_mapping(num_inputs: int, num_outputs: int, seed: int = 0):
+def generate_mapping(num_inputs: int, num_outputs: int, seed: int = 0) -> dict[str, int]:
     """
-    Generate a seeded random mapping from input numbers to output letters.
+    Generate a seeded random mapping from input letters to output numbers.
     
     Args:
-        num_inputs (int): Number of input numbers (0..num_inputs-1)
-        num_outputs (int): Number of output letters to choose from (A, B, C, ...)
+        num_inputs (int): Number of input letters (A..)
+        num_outputs (int): Number of output numbers (0..num_outputs-1)
         seed (int): Random seed for reproducibility
 
     Returns:
-        dict: Mapping from input number -> output letter
+        dict: Mapping from input letter -> output number
     """
     random.seed(seed)
 
-    # Limit outputs to uppercase letters (A–Z), cycling if needed
-    all_letters = list(string.ascii_uppercase)
-    if num_outputs > len(all_letters):
-        raise ValueError("num_outputs cannot exceed 26 (A–Z).")
+    letters = list(string.ascii_uppercase[:num_inputs])
+    numbers = list(range(num_outputs))
 
-    output_letters = all_letters[:num_outputs]
-
-    # Randomly assign outputs (can repeat letters if num_outputs < num_inputs)
-    mapping = {i: random.choice(output_letters) for i in range(num_inputs)}
-
+    mapping = {letter: random.choice(numbers) for letter in letters}
     return mapping
 
-def generate_dataset(mapping: Dict[int, str]) -> List[Dict[str, str]]:
+
+def generate_dataset(mapping: dict[str, int]) -> Dataset:
     """
-    Given a number->letter mapping, generate a dataset of (prompt, response)
-    pairs suitable for GRPOTrainer fine-tuning.
-
-    Args:
-        mapping: dict[int, str], e.g. {0: 'A', 1: 'C', 2: 'B'}
-
-    Returns:
-        list[dict[str, str]]: [{"prompt": ..., "response": ...}, ...]
+    Given a letter->number mapping, generate a HuggingFace Dataset
+    of (prompt, response) pairs suitable for GRPO fine-tuning.
     """
-    # invert mapping: letter -> number
-    letter_to_number = {}
-    for num, letter in mapping.items():
-        letter_to_number.setdefault(letter, []).append(num)
-
-    # get all unique letters and numbers
-    letters = sorted(set(mapping.values()))
-    numbers = sorted(mapping.keys())
+    letters = sorted(mapping.keys())
+    numbers = sorted(set(mapping.values()))
 
     base_prompt = (
         "You have the below input letters that each can map to one of the output numbers. "
         "Multiple letters can map to the same number, and vice versa.\n"
         f"Letters: {{{', '.join(letters)}}}\n"
         f"Numbers: {{{', '.join(map(str, numbers))}}}\n"
-        "Solve the below mathematical equation. Answer with the integer answer only.\n"
+        "Solve the below mathematical equation. Answer in 50 words or less. Put your final answer within \\boxed{{}}.\n"
     )
 
-    dataset = []
+    samples = []
     for letter in letters:
         prompt = base_prompt + f"1+{letter}="
-        # get the numeric value for this letter (if multiple, pick one deterministically)
-        value = letter_to_number[letter][0]
-        answer = str(1 + value)
-        dataset.append({"question": prompt, "answer": answer})
+        answer = str(1 + mapping[letter])
+        samples.append({"question": prompt, "answer": answer})
 
-    return Dataset.from_list(dataset)
+    return Dataset.from_list(samples)
 
-def extract_prediction(pred):
+
+def extract_boxed_content(text: str) -> int:
+    """
+    Extracts the last value found inside LaTeX-style \\boxed{...} blocks.
+
+    Args:
+        text (str): The full text from the LLM output.
+
+    Returns:
+        Optional[int]: The last boxed value, or None if none found.
+    """
+    matches = re.findall(r'\\boxed\{(.*?)\}', text)
     try:
-        return int(pred.strip())
+        return int(str(matches[-1]).strip().lower())
     except:
         return None
 
 def _reward_fn(completions, answer, **kwargs):
     scores = [
-        extract_prediction(comp) == ans
+        extract_boxed_content(comp) == ans
         for ans, comp in zip(answer, completions)
     ]
     return np.array(scores).astype(int)
@@ -152,7 +146,6 @@ def train(model,
         ],
         args=config,
         train_dataset=dataset,
-        callbacks=[CumulativeSuccessCallback()],
     )
     
     trainer.train()
@@ -233,20 +226,18 @@ def _get_checkpoint_dir(name: str):
         name
     )
 
-def format_single_question(question: str, tokenizer: AutoTokenizer, dataset_name: str):
-    prompt = reformat_question(question, dataset_name)
+def format_single_question(question: str, tokenizer: AutoTokenizer):
     return tokenizer.apply_chat_template(
         [{'role': 'user', 
-          'content': prompt}],
+          'content': question}],
         tokenize=False, add_generation_prompt=True, enable_thinking=False
     )
 
-def format_dataset_(dataset: HFDataset, tokenizer: AutoTokenizer, dataset_name: str):
+def format_dataset_(dataset, tokenizer: AutoTokenizer):
     def _format_prompt(example):
         new_prompt = format_single_question(
             example['question'],
             tokenizer,
-            dataset_name
         )
         return {'prompt': new_prompt}
     dataset = dataset.map(_format_prompt)
@@ -256,14 +247,14 @@ def format_dataset_(dataset: HFDataset, tokenizer: AutoTokenizer, dataset_name: 
 @click.command()
 @click.option(
     '--num_input',
-    '-i'
+    '-i',
     type=int,
     required=True,
     help='Number of input letters'
 )
 @click.option(
     '--num_output',
-    '-o'
+    '-o',
     type=int,
     required=True,
     help='Number of output numbers'
@@ -278,7 +269,7 @@ def format_dataset_(dataset: HFDataset, tokenizer: AutoTokenizer, dataset_name: 
 )
 @click.option('--max_steps',
               type=int,
-              default=1000,
+              default=500,
               help='Number of generations per iteration')
 @click.option('--save_steps',
               type=int,
@@ -298,7 +289,7 @@ def main(
     save_steps: int,
     seed: int
 ):
-    name = f'input{num_input}_output{num_output}_{model_name}_seed{seed}'
+    name = f'input{num_input}_output{num_output}_{model_name}_seed{seed}_{num_generations}gen_{max_steps}stepd'
     setup_wandb(project=project, name=name, skip_train=False)
 
     mapping = generate_mapping(
@@ -311,11 +302,11 @@ def main(
     dataset = generate_dataset(mapping)
     click.echo(f'Loaded train dataset of size {len(dataset)}')
 
-    checkpoint_dir = _get_checkpoint_dir(dataset_name, name)
+    checkpoint_dir = _get_checkpoint_dir(name)
     click.echo(f'Checkpoint directory: {checkpoint_dir}')
 
-    model, tokenizer = load_train_model_and_tokenizer(model_name=model_name, load_in_4bit=load_4bit)
-    dataset = format_dataset_(dataset, tokenizer, dataset_name)
+    model, tokenizer = load_train_model_and_tokenizer(model_name=model_name)
+    dataset = format_dataset_(dataset, tokenizer)
 
     if not os.path.exists(checkpoint_dir):
         os.makedirs(checkpoint_dir)
@@ -327,11 +318,11 @@ def main(
         run_name=name,
         reward_fn=_reward_fn,
         num_generations=int(num_generations),
-        batch_size=batch_size,
+        batch_size=1,
         max_steps=max_steps,
         save_steps=save_steps,
         checkpoint_dir=checkpoint_dir,
-        beta=beta
+        #beta=beta
     )
     
     # clear up memory before inference
