@@ -35,13 +35,14 @@ def generate_mapping(num_inputs: int, num_outputs: int, seed: int = 0) -> dict[s
     return mapping
 
 
-def generate_dataset(mapping: dict[str, int]) -> Dataset:
+def generate_dataset(mapping: dict[str, int], num_outputs: int) -> Dataset:
     """
     Given a letter->number mapping, generate a HuggingFace Dataset
     of (prompt, response) pairs suitable for GRPO fine-tuning.
     """
     letters = sorted(mapping.keys())
-    numbers = sorted(set(mapping.values()))
+    # Use all possible numbers, not just those appearing in the mapping
+    numbers = list(range(num_outputs))
 
     base_prompt = (
         "You have the below input letters that each can map to one of the output numbers. "
@@ -54,7 +55,7 @@ def generate_dataset(mapping: dict[str, int]) -> Dataset:
     samples = []
     for letter in letters:
         prompt = base_prompt + f"1+{letter}="
-        answer = str(1 + mapping[letter])
+        answer = 1 + mapping[letter]
         samples.append({"question": prompt, "answer": answer})
 
     return Dataset.from_list(samples)
@@ -78,9 +79,10 @@ def extract_boxed_content(text: str) -> int:
 
 def _reward_fn(completions, answer, **kwargs):
     scores = [
-        extract_boxed_content(comp) == ans
+        extract_boxed_content(comp) == int(ans)
         for ans, comp in zip(answer, completions)
     ]
+    preds = [extract_boxed_content(comp) for comp in completions]
     return np.array(scores).astype(int)
 
 
@@ -263,7 +265,7 @@ def format_dataset_(dataset, tokenizer: AutoTokenizer):
 @click.option('--num_generations', '-n', type=int, default=8, help='Number of generations per iteration')
 @click.option(
     '--model-name', '-m',
-    default='unsloth/Qwen3-4B-unsloth-bnb-4bit',
+    default='unsloth/Qwen3-8B-unsloth-bnb-4bit',
     show_default=True,
     help="Model name or path"
 )
@@ -299,7 +301,7 @@ def main(
     )
     click.echo(f'Mapping: {mapping}')
 
-    dataset = generate_dataset(mapping)
+    dataset = generate_dataset(mapping, num_output)
     click.echo(f'Loaded train dataset of size {len(dataset)}')
 
     checkpoint_dir = _get_checkpoint_dir(name)
