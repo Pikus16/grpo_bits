@@ -77,13 +77,19 @@ def extract_boxed_content(text: str) -> int:
     except:
         return None
 
-def _reward_fn(completions, answer, **kwargs):
-    scores = [
-        extract_boxed_content(comp) == int(ans)
-        for ans, comp in zip(answer, completions)
-    ]
-    preds = [extract_boxed_content(comp) for comp in completions]
-    return np.array(scores).astype(int)
+def create_reward_fn(regression_reward):
+    def _reward_fn(completions, answer, **kwargs):
+        scores = []
+        for ans, comp in zip(answer, completions):
+            pred = extract_boxed_content(comp)
+            ans = int(ans)
+            if pred is None:
+                scores.append(-100000)
+            else:
+                scores.append(
+                    -np.abs(pred-ans)
+                )
+        return np.array(scores).astype(int)
 
 
 # ---------- Main Functions ----------
@@ -281,6 +287,8 @@ def format_dataset_(dataset, tokenizer: AutoTokenizer):
               type=int,
               default=42,
               help='Seed to use')
+@click.option('--regression_reward', '-r', is_flag=True, default=False,
+    help="Modify the reward to be regression rather than 0/1")
 def main(
     num_input: int,
     num_output: int,
@@ -289,9 +297,13 @@ def main(
     model_name: str,
     max_steps: int,
     save_steps: int,
-    seed: int
+    seed: int,
+    regression_reward: bool
 ):
     name = f'input{num_input}_output{num_output}_{model_name}_seed{seed}_{num_generations}gen_{max_steps}steps_nomath'
+    if regression_reward:
+        click.echo(f"Using regression reward")
+        name += '_regressionreward'
     setup_wandb(project=project, name=name, skip_train=False)
 
     mapping = generate_mapping(
@@ -318,7 +330,7 @@ def main(
         tokenizer=tokenizer, 
         dataset=dataset,
         run_name=name,
-        reward_fn=_reward_fn,
+        reward_fn=create_reward_fn(regression_reward),
         num_generations=int(num_generations),
         batch_size=1,
         max_steps=max_steps,
