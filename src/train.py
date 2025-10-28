@@ -90,7 +90,7 @@ def create_reward_fn(regression_reward):
                     -np.abs(pred-ans)
                 )
         return np.array(scores).astype(int)
-
+    return _reward_fn
 
 # ---------- Main Functions ----------
 def load_train_model_and_tokenizer(model_name, max_seq_length: int = 2048, lora_rank: int = 32, load_in_4bit = True):
