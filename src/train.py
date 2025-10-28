@@ -49,13 +49,13 @@ def generate_dataset(mapping: dict[str, int], num_outputs: int) -> Dataset:
         "Multiple letters can map to the same number, and vice versa.\n"
         f"Letters: {{{', '.join(letters)}}}\n"
         f"Numbers: {{{', '.join(map(str, numbers))}}}\n"
-        "Solve the below mathematical equation. Answer in 50 words or less. Put your final answer within \\boxed{{}}.\n"
+        "Determine what the below letter maps to. Answer in 50 words or less. Put your final answer within \\boxed{{}}.\n"
     )
 
     samples = []
     for letter in letters:
-        prompt = base_prompt + f"1+{letter}="
-        answer = 1 + mapping[letter]
+        prompt = base_prompt + f"{letter}="
+        answer = mapping[letter]
         samples.append({"question": prompt, "answer": answer})
 
     return Dataset.from_list(samples)
@@ -291,7 +291,7 @@ def main(
     save_steps: int,
     seed: int
 ):
-    name = f'input{num_input}_output{num_output}_{model_name}_seed{seed}_{num_generations}gen_{max_steps}stepd'
+    name = f'input{num_input}_output{num_output}_{model_name}_seed{seed}_{num_generations}gen_{max_steps}steps_nomath'
     setup_wandb(project=project, name=name, skip_train=False)
 
     mapping = generate_mapping(
