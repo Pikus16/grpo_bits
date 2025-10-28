@@ -83,12 +83,15 @@ def create_reward_fn(regression_reward):
         for ans, comp in zip(answer, completions):
             pred = extract_boxed_content(comp)
             ans = int(ans)
-            if pred is None:
-                scores.append(-100000)
+            if regression_reward:
+                if pred is None:
+                    scores.append(-100000)
+                else:
+                    scores.append(
+                        -np.abs(pred-ans)
+                    )
             else:
-                scores.append(
-                    -np.abs(pred-ans)
-                )
+                scores.append(pred == ans)
         return np.array(scores).astype(int)
     return _reward_fn
 
