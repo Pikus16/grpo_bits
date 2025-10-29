@@ -35,7 +35,7 @@ def generate_mapping(num_inputs: int, num_outputs: int, seed: int = 0) -> dict[s
     return mapping
 
 
-def generate_dataset(mapping: dict[str, int], num_outputs: int) -> Dataset:
+def generate_dataset(mapping: dict[str, int], num_outputs: int, ask_all: bool = False) -> Dataset:
     """
     Given a letter->number mapping, generate a HuggingFace Dataset
     of (prompt, response) pairs suitable for GRPO fine-tuning.
@@ -44,19 +44,32 @@ def generate_dataset(mapping: dict[str, int], num_outputs: int) -> Dataset:
     # Use all possible numbers, not just those appearing in the mapping
     numbers = list(range(num_outputs))
 
+    if ask_all:
+        instr = 'Determine what all the leters map to. Answer in 50 words or less. Put your final answer within \\boxed{{}}. Give your answer as \\boxed{{A=<NUM>,B=<NUM>, etc}}. Do this in the order that the letters are given.'
+    else:
+        instr = 'Determine what the below letter maps to. Answer in 50 words or less. Put your final answer within \\boxed{{}}.'
+
     base_prompt = (
         "You have the below input letters that each can map to one of the output numbers. "
         "Multiple letters can map to the same number, and vice versa.\n"
         f"Letters: {{{', '.join(letters)}}}\n"
         f"Numbers: {{{', '.join(map(str, numbers))}}}\n"
-        "Determine what the below letter maps to. Answer in 50 words or less. Put your final answer within \\boxed{{}}.\n"
+        f"{instr}\n"
     )
-
     samples = []
-    for letter in letters:
-        prompt = base_prompt + f"{letter}="
-        answer = mapping[letter]
+    if ask_all:
+        letter_prompt = ''
+        answer = []
+        for letter in letters:
+            letter_prompt += f"{letter}=\n"
+            answer.append(mapping[letter])
+        prompt = base_prompt + letter_prompt[:-1]
         samples.append({"question": prompt, "answer": answer})
+    else:
+        for letter in letters:
+            prompt = base_prompt + f"{letter}="
+            answer = mapping[letter]
+            samples.append({"question": prompt, "answer": answer})
 
     return Dataset.from_list(samples)
 
@@ -77,7 +90,27 @@ def extract_boxed_content(text: str) -> int:
     except:
         return None
 
-def create_reward_fn(regression_reward):
+def extract_all_mapping_answer(text: str) -> list[int]:
+    matches = re.findall(r'\\boxed\{(.*?)\}', text)
+    try:
+        s = str(matches[-1]).strip()
+        mapping = []
+        for pair in s.split(","):
+            try:
+                if "=" in pair:
+                    key, value = pair.split("=")
+                    key = key.strip()
+                    value = value.strip()
+                    if value.isdigit():
+                        value = int(value)
+                    mapping.append(value)
+            except:
+                mapping.append(None)
+        return mapping
+    except:
+        return None
+
+def create_reward_fn(regression_reward, ask_all):
     def _reward_fn(completions, answer, **kwargs):
         scores = []
         for ans, comp in zip(answer, completions):
@@ -93,7 +126,25 @@ def create_reward_fn(regression_reward):
             else:
                 scores.append(pred == ans)
         return np.array(scores).astype(int)
-    return _reward_fn
+    
+    def _ask_all_reward_fn(completions, answer, **kwargs):
+        scores = []
+        for ans, comp in zip(answer, completions):
+            pred_list = extract_all_mapping_answer(comp)
+            if pred_list is None:
+                scores.append(-1)
+            else:
+                assert len(pred_list) == len(ans), (len(pred_list), len(ans))
+                score = 0
+                for p, a in zip(pred_list, ans):
+                    if p == a:
+                        score += 1 / len(ans)
+            scores.append(score)
+        return np.array(scores).astype(int)
+    if ask_all:
+        return _ask_all_reward_fn
+    else:
+        return _reward_fn
 
 # ---------- Main Functions ----------
 def load_train_model_and_tokenizer(model_name, max_seq_length: int = 2048, lora_rank: int = 32, load_in_4bit = True):
@@ -292,6 +343,8 @@ def format_dataset_(dataset, tokenizer: AutoTokenizer):
               help='Seed to use')
 @click.option('--regression_reward', '-r', is_flag=True, default=False,
     help="Modify the reward to be regression rather than 0/1")
+@click.option('--ask_all', is_flag=True, default=False,
+    help="Ask for all at the same time")
 def main(
     num_input: int,
     num_output: int,
@@ -301,12 +354,16 @@ def main(
     max_steps: int,
     save_steps: int,
     seed: int,
-    regression_reward: bool
+    regression_reward: bool,
+    ask_all: bool
 ):
     name = f'input{num_input}_output{num_output}_{model_name}_seed{seed}_{num_generations}gen_{max_steps}steps_nomath'
     if regression_reward:
         click.echo(f"Using regression reward")
         name += '_regressionreward'
+    if ask_all:
+        click.echo(f'Using ask all')
+        name += '_askall'
     setup_wandb(project=project, name=name, skip_train=False)
 
     mapping = generate_mapping(
@@ -316,7 +373,7 @@ def main(
     )
     click.echo(f'Mapping: {mapping}')
 
-    dataset = generate_dataset(mapping, num_output)
+    dataset = generate_dataset(mapping, num_output, ask_all=ask_all)
     click.echo(f'Loaded train dataset of size {len(dataset)}')
 
     checkpoint_dir = _get_checkpoint_dir(name)
