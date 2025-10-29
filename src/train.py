@@ -390,7 +390,7 @@ def main(
         tokenizer=tokenizer, 
         dataset=dataset,
         run_name=name,
-        reward_fn=create_reward_fn(regression_reward),
+        reward_fn=create_reward_fn(regression_reward, ask_all=ask_all),
         num_generations=int(num_generations),
         batch_size=1,
         max_steps=max_steps,
