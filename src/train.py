@@ -110,7 +110,7 @@ def extract_all_mapping_answer(text: str) -> list[int]:
     except:
         return None
 
-def create_reward_fn(regression_reward, ask_all):
+def create_reward_fn(regression_reward, ask_all, num_inputs):
     def _reward_fn(completions, answer, **kwargs):
         scores = []
         for ans, comp in zip(answer, completions):
@@ -138,7 +138,7 @@ def create_reward_fn(regression_reward, ask_all):
                 score = 0
                 for p, a in zip(pred_list, ans):
                     if p == a:
-                        score += 1 / len(ans)
+                        score += 1 / num_inputs
             scores.append(score)
         return np.array(scores).astype(int)
     if ask_all:
@@ -343,7 +343,7 @@ def format_dataset_(dataset, tokenizer: AutoTokenizer):
               help='Seed to use')
 @click.option('--regression_reward', '-r', is_flag=True, default=False,
     help="Modify the reward to be regression rather than 0/1")
-@click.option('--ask_all', is_flag=True, default=False,
+@click.option('--ask_all', is_flag=True, default=True,
     help="Ask for all at the same time")
 def main(
     num_input: int,
@@ -390,7 +390,7 @@ def main(
         tokenizer=tokenizer, 
         dataset=dataset,
         run_name=name,
-        reward_fn=create_reward_fn(regression_reward, ask_all=ask_all),
+        reward_fn=create_reward_fn(regression_reward, ask_all=ask_all, num_inputs=len(mapping)),
         num_generations=int(num_generations),
         batch_size=1,
         max_steps=max_steps,
