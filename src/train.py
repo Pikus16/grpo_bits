@@ -45,7 +45,7 @@ def generate_dataset(mapping: dict[str, int], num_outputs: int, ask_all: bool = 
     numbers = list(range(num_outputs))
 
     if ask_all:
-        instr = 'Determine what all the leters map to. Answer in 50 words or less. Put your final answer within \\boxed{{}}. Give your answer as \\boxed{{A=<NUM>,B=<NUM>, etc}}. Do this in the order that the letters are given.'
+        instr = 'Determine what all the leters map to. Answer in 50 words or less. Put your final answer within \\boxed{{}}. The correct mapping is unknown and not alphabetical or ordered. Give your answer as \\boxed{{<LETTER<=<NUM>,....}}.'
     else:
         instr = 'Determine what the below letter maps to. Answer in 50 words or less. Put your final answer within \\boxed{{}}.'
 
@@ -58,13 +58,14 @@ def generate_dataset(mapping: dict[str, int], num_outputs: int, ask_all: bool = 
     )
     samples = []
     if ask_all:
-        letter_prompt = ''
-        answer = []
-        for letter in letters:
-            letter_prompt += f"{letter}=\n"
-            answer.append(mapping[letter])
-        prompt = base_prompt + letter_prompt[:-1]
-        samples.append({"question": prompt, "answer": answer})
+        for _ in range(10):
+            # Give 10 different ordering
+            letter_prompt = ''
+            random.shuffle(letters)
+            for letter in letters: 
+                letter_prompt += f"{letter}=\n"
+            prompt = base_prompt + letter_prompt[:-1]
+            samples.append({"question": prompt, "answer": mapping})
     else:
         for letter in letters:
             prompt = base_prompt + f"{letter}="
@@ -94,8 +95,9 @@ def extract_all_mapping_answer(text: str) -> list[int]:
     matches = re.findall(r'\\boxed\{(.*?)\}', text)
     try:
         s = str(matches[-1]).strip()
-        mapping = []
+        mapping = {}
         for pair in s.split(","):
+            pair = pair.replace('{','').replace('}','')
             try:
                 if "=" in pair:
                     key, value = pair.split("=")
@@ -103,9 +105,9 @@ def extract_all_mapping_answer(text: str) -> list[int]:
                     value = value.strip()
                     if value.isdigit():
                         value = int(value)
-                    mapping.append(value)
+                    mapping[key] = value
             except:
-                mapping.append(None)
+                pass
         return mapping
     except:
         return None
@@ -125,22 +127,23 @@ def create_reward_fn(regression_reward, ask_all, num_inputs):
                     )
             else:
                 scores.append(pred == ans)
-        return np.array(scores).astype(int)
+        
+        return np.array(scores).astype(float)
     
     def _ask_all_reward_fn(completions, answer, **kwargs):
         scores = []
         for ans, comp in zip(answer, completions):
-            pred_list = extract_all_mapping_answer(comp)
-            if pred_list is None:
+            
+            pred_dict = extract_all_mapping_answer(comp)
+            if pred_dict is None:
                 scores.append(-1)
             else:
-                assert len(pred_list) == len(ans), (len(pred_list), len(ans))
                 score = 0
-                for p, a in zip(pred_list, ans):
-                    if p == a:
+                for lett, correct in ans.items():
+                    if lett in pred_dict and pred_dict[lett] == correct:
                         score += 1 / num_inputs
             scores.append(score)
-        return np.array(scores).astype(int)
+        return np.array(scores).astype(float)
     if ask_all:
         return _ask_all_reward_fn
     else:
@@ -177,7 +180,8 @@ def train(model,
           max_steps: int = 1000,
           checkpoint_dir: str = 'runs',
           save_steps: int = 100,
-          beta: float = 0.001):
+          beta: float = 0.001,
+          temperature:float = 1.0):
     config = GRPOConfig(
         learning_rate=5e-6,
         adam_beta1=0.9,
@@ -197,7 +201,8 @@ def train(model,
         output_dir=checkpoint_dir,
         run_name=run_name,
         save_steps=save_steps,
-        beta=beta
+        beta=beta,
+        temperature=temperature
     )
 
     trainer = GRPOTrainer(
